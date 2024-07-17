@@ -65,6 +65,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "embedded-storage-sd-spi"
+version = "0.1.0"
+dependencies = [
+ "aligned",
+ "block-device-driver",
+ "embedded-hal-async",
+ "embedded-storage",
+ "embedded-storage-async",
+ "sdspi",
+ "sequential-storage",
+]
+
+[[package]]
 name = "sdio-host"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -90,18 +103,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8d25123e754473ed08bcc4e0ef61f0a733662872885e533ffdf03771119712fc"
 dependencies = [
  "embedded-storage-async",
-]
-
-[[package]]
-name = "sequential-storage-sd-spi"
-version = "0.1.0"
-dependencies = [
- "aligned",
- "block-device-driver",
- "embedded-hal-async",
- "embedded-storage-async",
- "sdspi",
- "sequential-storage",
 ]
 
 [[package]]

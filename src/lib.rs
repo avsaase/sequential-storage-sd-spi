@@ -1,3 +1,5 @@
+#![no_std]
+
 use block_device_driver::{slice_to_blocks, slice_to_blocks_mut};
 use embedded_hal_async::{delay::DelayNs, spi::SpiDevice};
 use embedded_storage_async::nor_flash::{
@@ -13,33 +15,44 @@ pub enum Error {
     Sd(sdspi::Error),
 }
 
-pub struct SdSpi<SPI, D, ALIGN, const SIZE: usize>
+pub struct SdSpi<SPI, D, ALIGN>
 where
     SPI: SpiDevice,
-    D: DelayNs + Clone,
+    D: DelayNs,
     ALIGN: aligned::Alignment,
 {
     inner: sdspi::SdSpi<SPI, D, ALIGN>,
     block_address_in_cache: Option<u32>,
     block_cache: [u8; BLOCK_SIZE],
+    card_capacity: u32,
 }
 
-impl<SPI, D, ALIGN, const SIZE: usize> SdSpi<SPI, D, ALIGN, SIZE>
+impl<SPI, D, ALIGN> SdSpi<SPI, D, ALIGN>
 where
     SPI: SpiDevice,
     D: DelayNs + Clone,
     ALIGN: aligned::Alignment,
 {
-    pub fn new(device: SPI, delay: D) -> Self {
+    pub fn new(device: SPI, delay: D, card_capacity: u32) -> Self {
         Self {
             inner: sdspi::SdSpi::new(device, delay),
             block_address_in_cache: None,
             block_cache: [0u8; BLOCK_SIZE],
+            card_capacity,
         }
+    }
+
+    pub async fn init(&mut self) -> Result<(), Error> {
+        self.inner.init().await?;
+        Ok(())
+    }
+
+    pub fn spi(&mut self) -> &mut SPI {
+        self.inner.spi()
     }
 }
 
-impl<SPI, D, ALIGN, const SIZE: usize> ReadNorFlash for SdSpi<SPI, D, ALIGN, SIZE>
+impl<SPI, D, ALIGN> ReadNorFlash for SdSpi<SPI, D, ALIGN>
 where
     SPI: SpiDevice,
     D: DelayNs + Clone,
@@ -55,22 +68,24 @@ where
             self.inner
                 .read(
                     block_address,
-                    &mut slice_to_blocks_mut::<ALIGN, SIZE>(&mut self.block_cache),
+                    &mut slice_to_blocks_mut::<ALIGN, BLOCK_SIZE>(&mut self.block_cache),
                 )
                 .await?;
             self.block_address_in_cache = Some(block_address);
         }
 
-        bytes.copy_from_slice(&self.block_cache[..bytes.len()]);
+        let offset_in_block = offset as usize % BLOCK_SIZE;
+        let length = bytes.len();
+        bytes.copy_from_slice(&self.block_cache[offset_in_block..(offset_in_block + length)]);
         Ok(())
     }
 
     fn capacity(&self) -> usize {
-        SIZE
+        self.card_capacity as usize
     }
 }
 
-impl<SPI, D, ALIGN, const SIZE: usize> NorFlash for SdSpi<SPI, D, ALIGN, SIZE>
+impl<SPI, D, ALIGN> NorFlash for SdSpi<SPI, D, ALIGN>
 where
     SPI: SpiDevice,
     D: DelayNs + Clone,
@@ -80,8 +95,20 @@ where
 
     const ERASE_SIZE: usize = BLOCK_SIZE;
 
-    async fn erase(&mut self, _from: u32, _to: u32) -> Result<(), Self::Error> {
-        todo!()
+    async fn erase(&mut self, from: u32, to: u32) -> Result<(), Self::Error> {
+        let from_block_address = address_to_block(from);
+        let to_block_address = address_to_block(to);
+
+        for block_address in from_block_address..=to_block_address {
+            self.inner
+                .write(
+                    block_address,
+                    slice_to_blocks::<ALIGN, BLOCK_SIZE>(&[0u8; BLOCK_SIZE]),
+                )
+                .await?;
+        }
+        self.block_address_in_cache = None;
+        Ok(())
     }
 
     async fn write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), Self::Error> {
@@ -92,7 +119,7 @@ where
             self.inner
                 .read(
                     block_address,
-                    &mut slice_to_blocks_mut::<ALIGN, SIZE>(&mut self.block_cache),
+                    &mut slice_to_blocks_mut::<ALIGN, BLOCK_SIZE>(&mut self.block_cache),
                 )
                 .await?;
             self.block_address_in_cache = Some(block_address);
@@ -108,17 +135,18 @@ where
         self.inner
             .write(
                 block_address,
-                &mut slice_to_blocks::<ALIGN, SIZE>(&self.block_cache),
+                &mut slice_to_blocks::<ALIGN, BLOCK_SIZE>(&self.block_cache),
             )
             .await?;
+
         Ok(())
     }
 }
 
-impl<SPI, D, ALIGN, const SIZE: usize> ErrorType for SdSpi<SPI, D, ALIGN, SIZE>
+impl<SPI, D, ALIGN> ErrorType for SdSpi<SPI, D, ALIGN>
 where
     SPI: SpiDevice,
-    D: DelayNs + Clone,
+    D: DelayNs,
     ALIGN: aligned::Alignment,
 {
     type Error = Error;
