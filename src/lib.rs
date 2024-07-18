@@ -1,7 +1,8 @@
 #![no_std]
 
-use block_device_driver::{slice_to_blocks, slice_to_blocks_mut};
+use block_device_adapters::BufStream;
 use embedded_hal_async::{delay::DelayNs, spi::SpiDevice};
+use embedded_io_async::{Read, Seek, SeekFrom, Write};
 use embedded_storage_async::nor_flash::{
     ErrorType, NorFlash, NorFlashError, NorFlashErrorKind, ReadNorFlash,
 };
@@ -18,13 +19,14 @@ pub enum Error {
 pub struct SdSpi<SPI, D, ALIGN>
 where
     SPI: SpiDevice,
-    D: DelayNs,
+    D: DelayNs + Clone,
     ALIGN: aligned::Alignment,
 {
-    inner: sdspi::SdSpi<SPI, D, ALIGN>,
-    block_address_in_cache: Option<u32>,
-    block_cache: [u8; BLOCK_SIZE],
+    // inner: sdspi::SdSpi<SPI, D, ALIGN>,
+    // block_address_in_cache: Option<u32>,
+    // block_cache: [u8; BLOCK_SIZE],
     card_capacity: u32,
+    buf_stream: BufStream<sdspi::SdSpi<SPI, D, ALIGN>, BLOCK_SIZE>,
 }
 
 impl<SPI, D, ALIGN> SdSpi<SPI, D, ALIGN>
@@ -35,10 +37,11 @@ where
 {
     pub fn new(device: SPI, delay: D, card_capacity: u32) -> Self {
         Self {
-            inner: sdspi::SdSpi::new(device, delay),
-            block_address_in_cache: None,
-            block_cache: [0u8; BLOCK_SIZE],
+            // inner: sdspi::SdSpi::new(device, delay),
+            // block_address_in_cache: None,
+            // block_cache: [0u8; BLOCK_SIZE],
             card_capacity,
+            buf_stream: BufStream::new(sdspi::SdSpi::new(device, delay)),
         }
     }
 
@@ -61,22 +64,8 @@ where
     const READ_SIZE: usize = 1;
 
     async fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), Self::Error> {
-        let block_address = address_to_block(offset);
-
-        // Read block into cache if needed
-        if self.block_address_in_cache != Some(block_address) {
-            self.inner
-                .read(
-                    block_address,
-                    &mut slice_to_blocks_mut::<ALIGN, BLOCK_SIZE>(&mut self.block_cache),
-                )
-                .await?;
-            self.block_address_in_cache = Some(block_address);
-        }
-
-        let offset_in_block = offset as usize % BLOCK_SIZE;
-        let length = bytes.len();
-        bytes.copy_from_slice(&self.block_cache[offset_in_block..(offset_in_block + length)]);
+        self.buf_stream.seek(SeekFrom::Start(offset as u64));
+        self.buf_stream.read(bytes).await.unwrap();
         Ok(())
     }
 
@@ -96,49 +85,12 @@ where
     const ERASE_SIZE: usize = BLOCK_SIZE;
 
     async fn erase(&mut self, from: u32, to: u32) -> Result<(), Self::Error> {
-        let from_block_address = address_to_block(from);
-        let to_block_address = address_to_block(to);
-
-        for block_address in from_block_address..=to_block_address {
-            self.inner
-                .write(
-                    block_address,
-                    slice_to_blocks::<ALIGN, BLOCK_SIZE>(&[0u8; BLOCK_SIZE]),
-                )
-                .await?;
-        }
-        self.block_address_in_cache = None;
-        Ok(())
+        todo!("Implement erase using embedded-io-async methods");
     }
 
     async fn write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), Self::Error> {
-        let block_address = address_to_block(offset);
-
-        // Read block into cache if needed
-        if self.block_address_in_cache != Some(block_address) {
-            self.inner
-                .read(
-                    block_address,
-                    &mut slice_to_blocks_mut::<ALIGN, BLOCK_SIZE>(&mut self.block_cache),
-                )
-                .await?;
-            self.block_address_in_cache = Some(block_address);
-        }
-
-        // Update the cache
-        let offset_in_block = offset % BLOCK_SIZE as u32;
-        let length = bytes.len();
-        self.block_cache[(offset_in_block as usize)..(offset_in_block as usize + length)]
-            .copy_from_slice(bytes);
-
-        // Write the cache back to the card
-        self.inner
-            .write(
-                block_address,
-                &mut slice_to_blocks::<ALIGN, BLOCK_SIZE>(&self.block_cache),
-            )
-            .await?;
-
+        self.buf_stream.seek(SeekFrom::Start(offset as u64));
+        self.buf_stream.write(bytes).await.unwrap();
         Ok(())
     }
 }
@@ -146,7 +98,7 @@ where
 impl<SPI, D, ALIGN> ErrorType for SdSpi<SPI, D, ALIGN>
 where
     SPI: SpiDevice,
-    D: DelayNs,
+    D: DelayNs + Clone,
     ALIGN: aligned::Alignment,
 {
     type Error = Error;
